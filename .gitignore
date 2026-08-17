@@ -1,0 +1,39 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+terraform/modules/**/.terraform.lock.hcl
+override.tf
+terraform/modules/**/.terraform.lock.hcl
+override.tf.json
+*_terraform/modules/**/.terraform.lock.hcl
+override.tf
+*_terraform/modules/**/.terraform.lock.hcl
+override.tf.json
+.terraformrc
+terraform.rc
+tfplan
+plan.txt
+
+# Build artifacts
+.terraform-build/
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

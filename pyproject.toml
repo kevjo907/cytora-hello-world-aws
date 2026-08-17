@@ -1,0 +1,26 @@
+[project]
+name = "hello-lambda"
+version = "1.0.0"
+description = "Hello World HTTP app on AWS API Gateway + Lambda"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+# Put the Lambda source on the path so tests import the handler exactly the
+# way the runtime does: module `handler`, function `handler`.
+pythonpath = ["src/hello"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src/hello", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # assert is the point of a test
