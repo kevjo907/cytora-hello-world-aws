@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and adjust, or pass with -var-file.
+# terraform.tfvars is gitignored: keep environment-specific values out of git.
+
+aws_region       = "eu-west-1"
+project_name     = "hello-world"
+environment      = "dev"
+greeting_message = "Hello, World!"
+
+lambda_memory_size = 128
+log_retention_days = 14
+
+throttling_burst_limit = 100
+throttling_rate_limit  = 50
+
+additional_tags = {
+  Owner = "kevin"
+}
