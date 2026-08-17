@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch; no point paying for stale ones.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.12.2"
+  PYTHON_VERSION: "3.12"
+  # Must match cd.yml, otherwise the plan shown on a PR describes different
+  # resources than the deploy actually creates.
+  TF_VAR_environment: prod
+
+jobs:
+  app:
+    name: Lint & test application
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dev dependencies
+        run: pip install pytest ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
+
+      - name: Run unit tests
+        run: pytest
+
+  terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      # -backend=false validates syntax and types without touching AWS, so
+      # this job needs no credentials and runs on forked PRs.
+      - name: Validate root module
+        run: |
+          terraform -chdir=terraform init -backend=false
+          terraform -chdir=terraform validate
+
+      - name: Validate bootstrap module
+        run: |
+          terraform -chdir=terraform/bootstrap init -backend=false
+          terraform -chdir=terraform/bootstrap validate
+
+  plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    needs: [app, terraform]
+    # Skipped automatically until the AWS_ROLE_ARN variable is configured, so
+    # the pipeline stays green before any AWS account is wired up.
+    if: vars.AWS_ROLE_ARN != ''
+
+    permissions:
+      contents: read
+      id-token: write        # required to mint the OIDC token
+      pull-requests: write   # required to post the plan comment
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Assume AWS deploy role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-plan-${{ github.run_id }}
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=hello-world/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform plan
+        id: plan
+        # pipefail matters: without it `tee` masks a failing terraform plan.
+        shell: bash
+        run: |
+          set -o pipefail
+          terraform -chdir=terraform plan -no-color -input=false -out=tfplan \
+            | tee plan.txt
+
+      - name: Comment plan on pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8');
+            // Comments cap at 65536 characters; keep the tail, which holds
+            // the resource summary.
+            const body = plan.length > 60000
+              ? '_(truncated)_\n' + plan.slice(-60000)
+              : plan;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Terraform plan\n\n\`\`\`terraform\n${body}\n\`\`\``,
+            });

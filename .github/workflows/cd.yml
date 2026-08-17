@@ -1,0 +1,126 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    # Docs-only commits should not trigger a deploy.
+    paths:
+      - "src/**"
+      - "terraform/**"
+      - ".github/workflows/cd.yml"
+  workflow_dispatch:
+
+# Never let two applies race for the state lock.
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.12.2"
+  PYTHON_VERSION: "3.12"
+  # Must match ci.yml so the plan reviewed on the PR is what gets applied.
+  TF_VAR_environment: prod
+
+jobs:
+  test:
+    name: Test before deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pytest ruff
+      - run: ruff check .
+      - run: pytest
+
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    needs: test
+    if: vars.AWS_ROLE_ARN != ''
+
+    # Attach a GitHub environment so required reviewers can gate production.
+    environment:
+      name: production
+      url: ${{ steps.outputs.outputs.api_endpoint }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Assume AWS deploy role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=hello-world/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform apply
+        run: |
+          terraform -chdir=terraform apply \
+            -auto-approve \
+            -input=false
+
+      - name: Collect outputs
+        id: outputs
+        run: |
+          endpoint=$(terraform -chdir=terraform output -raw api_endpoint)
+          echo "api_endpoint=$endpoint" >> "$GITHUB_OUTPUT"
+
+      # Terraform reporting success only means the resources exist. This
+      # proves the deployed endpoint actually serves traffic.
+      - name: Smoke test the deployed endpoint
+        run: |
+          url="${{ steps.outputs.outputs.api_endpoint }}hello"
+          echo "Probing $url"
+
+          for attempt in 1 2 3 4 5; do
+            status=$(curl -sS -o body.json -w '%{http_code}' "$url" || echo 000)
+            if [ "$status" = "200" ]; then
+              echo "HTTP 200 on attempt $attempt"
+              cat body.json
+              jq -e '.message' body.json > /dev/null
+              echo "Smoke test passed."
+              exit 0
+            fi
+            echo "Attempt $attempt returned $status; retrying in 5s..."
+            sleep 5
+          done
+
+          echo "::error::Smoke test failed - endpoint never returned 200."
+          exit 1
+
+      - name: Publish deployment summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Endpoint | ${{ steps.outputs.outputs.api_endpoint }} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Region | ${{ vars.AWS_REGION }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
