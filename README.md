@@ -34,7 +34,7 @@ $ curl https://<api-id>.execute-api.eu-west-1.amazonaws.com/hello
 │   ├── main.tf                  Root module: wires the two modules together
 │   ├── variables.tf             Inputs, with validation
 │   ├── outputs.tf               Endpoint URL, function name, log groups
-│   ├── backend.tf               Partial S3 backend (local state by default)
+│   ├── backend.tf               Partial S3 backend (see Remote state)
 │   ├── modules/lambda/          Function, execution role, log group
 │   ├── modules/api_gateway/     HTTP API, integration, routes, stage
 │   └── bootstrap/               One-time: state bucket + GitHub OIDC role
@@ -57,6 +57,7 @@ To deploy into your own account:
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+make local-init    # local state, so no S3 bucket is needed first
 make plan
 make apply
 make smoke         # curl the live /hello endpoint
@@ -65,6 +66,17 @@ make destroy       # tear it down
 
 `make apply` prints the endpoint as a Terraform output. Nothing here leaves the
 AWS free tier at low traffic.
+
+### Remote state
+
+`backend.tf` declares a partial S3 backend, so remote state is the committed
+default — nobody can apply against local state by accident and strand the real
+state file on a laptop. CI fills in the concrete values at `init` time.
+
+For a quick local try that shouldn't need a state bucket provisioned first,
+`make local-init` writes a gitignored `backend_override.tf` containing
+`backend "local" {}`. Terraform's override-file mechanism replaces the backend
+block entirely, so the committed default stays remote.
 
 ## Design decisions
 
@@ -149,6 +161,31 @@ gh variable set AWS_REGION      --body "eu-west-1"
 
 State locking uses S3's native `use_lockfile` (Terraform 1.10+), so there is no
 DynamoDB table to maintain.
+
+## Verified deployment
+
+Deployed to a real AWS account and exercised end to end:
+
+```console
+$ curl -i https://<api-id>.execute-api.eu-west-1.amazonaws.com/hello
+HTTP/2 200
+content-type: application/json
+x-content-type-options: nosniff
+cache-control: no-store
+strict-transport-security: max-age=63072000; includeSubDomains
+referrer-policy: no-referrer
+x-frame-options: DENY
+
+{"message":"Hello, World!","stage":"dev","path":"/hello", ...}
+```
+
+Both routes return 200, unrouted paths return 404, and both CloudWatch log
+groups receive structured JSON:
+
+```
+{"request_id":"29c2...","event":"request_completed","status":200}
+{"routeKey":"GET /hello","status":"200","responseLatency":"262", ...}
+```
 
 ## Testing
 

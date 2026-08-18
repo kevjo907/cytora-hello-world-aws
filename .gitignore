@@ -6,14 +6,12 @@ crash.log
 crash.*.log
 *.tfvars
 !*.tfvars.example
+# Root configs commit their lock file; reusable modules do not pin providers.
 terraform/modules/**/.terraform.lock.hcl
 override.tf
-terraform/modules/**/.terraform.lock.hcl
 override.tf.json
-*_terraform/modules/**/.terraform.lock.hcl
-override.tf
-*_terraform/modules/**/.terraform.lock.hcl
-override.tf.json
+*_override.tf
+*_override.tf.json
 .terraformrc
 terraform.rc
 tfplan
